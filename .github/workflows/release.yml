@@ -14,17 +14,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Шаг 2: Подробная информация о файлах
-      - name: Debug file structure
+      # Шаг 2: Устанавливаем правильную рабочую директорию
+      - name: Set working directory
         run: |
-          echo "Current directory:"
-          pwd
-          echo "Files in root:"
-          dir
-          echo "Looking for pubspec.yaml:"
-          if (Test-Path "pubspec.yaml") { echo "FOUND pubspec.yaml" } else { echo "pubspec.yaml NOT FOUND" }
-          echo "Files in .github:"
-          if (Test-Path ".github") { dir .github } else { echo ".github folder not found" }
+          echo "Current directory: $(pwd)"
+          echo "Looking for pubspec.yaml..."
+          if (Test-Path "pubspec.yaml") {
+            echo "FOUND pubspec.yaml in current directory"
+          } else {
+            echo "pubspec.yaml NOT FOUND in current directory"
+            # Ищем во всех подпапках
+            $files = Get-ChildItem -Recurse -Filter "pubspec.yaml"
+            foreach ($file in $files) {
+              echo "Found pubspec.yaml in: $($file.DirectoryName)"
+            }
+          }
 
       # Шаг 3: Устанавливаем Flutter
       - name: Setup Flutter
@@ -38,22 +42,23 @@ jobs:
       - name: Flutter doctor
         run: flutter doctor -v
 
-      # Шаг 5: Получаем зависимости (с явным указанием пути)
+      # Шаг 5: Получаем зависимости - ИСПРАВЛЕНО с указанием пути
       - name: Get dependencies
         run: |
-          echo "Running flutter pub get in:"
-          pwd
+          cd ${{ github.workspace }}
           flutter pub get
 
       # Шаг 6: Собираем Windows
       - name: Build Windows
-        run: flutter build windows --release
+        run: |
+          cd ${{ github.workspace }}
+          flutter build windows --release
 
       # Шаг 7: Создаем ZIP
       - name: Create ZIP archive
         run: |
-          cd build\windows\x64\runner\Release
-          Compress-Archive -Path * -DestinationPath "$env:GITHUB_WORKSPACE\stepanov_new-$env:GITHUB_REF_NAME-windows.zip"
+          cd ${{ github.workspace }}/build/windows/x64/runner/Release
+          Compress-Archive -Path * -DestinationPath "${{ github.workspace }}/stepanov_new-${{ github.ref_name }}-windows.zip"
 
       # Шаг 8: Создаем релиз
       - name: Create Release
