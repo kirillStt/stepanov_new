@@ -1,0 +1,9 @@
+{
+  "windows": {
+    "version": "1.0.0",
+    "build_number": "1",
+    "download_url": "https://github.com/kirillStt/stepanov_new/releases/download/v1.0.0/stepanov_new-1.0.0-windows.zip",
+    "file_size": 48000000,
+    "release_notes": "Первая версия"
+  }
+}
