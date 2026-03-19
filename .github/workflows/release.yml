@@ -1,0 +1,57 @@
+name: Build and Release
+
+# Этот workflow запускается при создании тега вида v*
+on:
+  push:
+    tags:
+      - 'v*'  # Например: v1.0.1, v1.0.2, v2.0.0
+
+jobs:
+  build-windows:
+    # Запускаем на виртуальной машине с Windows
+    runs-on: windows-latest
+    
+    steps:
+      # Шаг 1: Загружаем код из репозитория
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Шаг 2: Устанавливаем Flutter
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      # Шаг 3: Проверяем Flutter
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      # Шаг 4: Получаем зависимости
+      - name: Get dependencies
+        run: flutter pub get
+
+      # Шаг 5: Собираем релизную версию под Windows
+      - name: Build Windows
+        run: flutter build windows --release
+
+      # Шаг 6: Создаем ZIP-архив с программой
+      - name: Create ZIP archive
+        run: |
+          # Переходим в папку с собранной программой
+          cd build\windows\x64\runner\Release
+          # Создаем ZIP-архив с именем, содержащим версию
+          # Имя тега берется из переменной окружения GITHUB_REF_NAME
+          Compress-Archive -Path * -DestinationPath "$env:GITHUB_WORKSPACE\stepanov_new-$env:GITHUB_REF_NAME-windows.zip"
+
+      # Шаг 7: Создаем релиз на GitHub
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          # Прикрепляем созданный ZIP-архив к релизу
+          files: stepanov_new-*.zip
+          # Автоматически генерировать описание релиза из коммитов
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,41 @@
+name: Update JSON after Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-json:
+    runs-on: ubuntu-latest
+    steps:
+      # Шаг 1: Загружаем код
+      - uses: actions/checkout@v4
+      
+      # Шаг 2: Получаем версию из тега
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      
+      # Шаг 3: Создаем новый updates.json
+      - name: Update updates.json
+        run: |
+          cat > updates.json << EOF
+          {
+            "windows": {
+              "version": "${{ steps.get_version.outputs.VERSION }}",
+              "build_number": "1",
+              "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/stepanov_new-${{ github.ref_name }}-windows.zip",
+              "file_size": 0,
+              "release_notes": "Автоматический релиз"
+            }
+          }
+          EOF
+      
+      # Шаг 4: Коммитим и пушим изменения
+      - name: Commit and push
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+          git add updates.json
+          git commit -m "Update version to ${{ steps.get_version.outputs.VERSION }}"
+          git push
