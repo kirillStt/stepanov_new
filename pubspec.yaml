@@ -1,0 +1,58 @@
+name: stepanov_new
+description: "Облачное файловое хранилище на Supabase"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # UI и иконки
+  cupertino_icons: ^1.0.8
+
+  # Автообновление версий
+  flutter_desktop_updater:
+    git:
+      url: https://github.com/qasimovv/flutter_desktop_updater.git
+      ref: main
+  
+  # Работа с файлами
+  file_picker: ^10.3.10
+  path_provider: ^2.1.5
+  
+  # Сеть и HTTP
+  dio: ^5.9.2
+  
+  # Замена uni_links на app_links
+  app_links: ^6.3.0
+
+  # Локальное хранилище
+  shared_preferences: ^2.5.4
+
+  # Supabase для хранения файлов
+  supabase_flutter: ^2.8.4
+
+  # Для работы с .env файлом (хранение ключей)
+  flutter_dotenv: ^5.2.1
+  
+  # Для шаринга файлов
+  share_plus: ^12.0.1
+  
+  # Для работы с XFile
+  cross_file: ^0.3.4+2
+  go_router: ^17.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  
+  #  ДОБАВЛЯЕМ АКТИВЫ для .env файла
+  assets:
+    - .env
