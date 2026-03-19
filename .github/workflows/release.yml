@@ -14,20 +14,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Шаг 2: Устанавливаем правильную рабочую директорию
-      - name: Set working directory
+      # Шаг 2: Проверяем наличие pubspec.yaml
+      - name: Verify project structure
         run: |
           echo "Current directory: $(pwd)"
-          echo "Looking for pubspec.yaml..."
+          echo "Files in root:"
+          dir
           if (Test-Path "pubspec.yaml") {
-            echo "FOUND pubspec.yaml in current directory"
+            echo "✅ pubspec.yaml found"
+            Get-Content pubspec.yaml -TotalCount 5
           } else {
-            echo "pubspec.yaml NOT FOUND in current directory"
-            # Ищем во всех подпапках
-            $files = Get-ChildItem -Recurse -Filter "pubspec.yaml"
-            foreach ($file in $files) {
-              echo "Found pubspec.yaml in: $($file.DirectoryName)"
-            }
+            echo "❌ pubspec.yaml NOT found!"
+            exit 1
           }
 
       # Шаг 3: Устанавливаем Flutter
@@ -42,23 +40,19 @@ jobs:
       - name: Flutter doctor
         run: flutter doctor -v
 
-      # Шаг 5: Получаем зависимости - ИСПРАВЛЕНО с указанием пути
+      # Шаг 5: Получаем зависимости
       - name: Get dependencies
-        run: |
-          cd ${{ github.workspace }}
-          flutter pub get
+        run: flutter pub get
 
       # Шаг 6: Собираем Windows
       - name: Build Windows
-        run: |
-          cd ${{ github.workspace }}
-          flutter build windows --release
+        run: flutter build windows --release
 
       # Шаг 7: Создаем ZIP
       - name: Create ZIP archive
         run: |
-          cd ${{ github.workspace }}/build/windows/x64/runner/Release
-          Compress-Archive -Path * -DestinationPath "${{ github.workspace }}/stepanov_new-${{ github.ref_name }}-windows.zip"
+          cd build\windows\x64\runner\Release
+          Compress-Archive -Path * -DestinationPath "$env:GITHUB_WORKSPACE\stepanov_new-$env:GITHUB_REF_NAME-windows.zip"
 
       # Шаг 8: Создаем релиз
       - name: Create Release
