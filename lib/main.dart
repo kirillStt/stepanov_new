@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:cross_file/cross_file.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:dio/dio.dart' as dio;
 import 'core/models/file_model.dart';
 import 'services/storage_service.dart';
 import 'services/supabase_storage_service.dart';
@@ -18,22 +19,144 @@ import 'package:flutter_desktop_updater/flutter_desktop_updater.dart';
 late StorageService storageService;
 late SupabaseClient supabase;
 
+// ========== API КЛИЕНТ ДЛЯ BACKEND НА VERCEL ==========
+// ========== API КЛИЕНТ ДЛЯ BACKEND НА VERCEL ==========
+class ApiClient {
+  static const String baseUrl = 'https://stepanov-backend.vercel.app/api';
+  
+  final dio.Dio _dio = dio.Dio(dio.BaseOptions(
+    baseUrl: baseUrl,
+    connectTimeout: const Duration(seconds: 30),
+    receiveTimeout: const Duration(seconds: 30),
+  ));
+  
+  String? _token;
+  
+  void setToken(String token) {
+    _token = token;
+    _dio.options.headers['Authorization'] = 'Bearer $token';
+  }
+  
+  Future<Map<String, dynamic>> getFiles() async {
+    final response = await _dio.get('/files');
+    return response.data;
+  }
+  
+  Future<Map<String, dynamic>> uploadFile(File file, String fileName) async {
+    final formData = dio.FormData.fromMap({
+      'file': await dio.MultipartFile.fromFile(file.path),
+      'originalName': fileName,
+    });
+    
+    final response = await _dio.post(
+      '/files/upload',
+      data: formData,
+      onSendProgress: (sent, total) {
+        print('Прогресс: ${(sent / total * 100).toStringAsFixed(1)}%');
+      },
+    );
+    
+    return response.data;
+  }
+  
+  Future<void> deleteFile(String fileId) async {
+    await _dio.delete('/files/$fileId');
+  }
+  
+  Future<String> getDownloadUrl(String fileId) async {
+    final response = await _dio.get('/files/$fileId/download');
+    return response.data['downloadUrl'];
+  }
+}
+
+// ========== НОВАЯ РЕАЛИЗАЦИЯ CloudStorageService ==========
+class CloudStorageService implements StorageService {
+  final ApiClient _apiClient = ApiClient();
+  
+  void init(String token) {
+    _apiClient.setToken(token);
+  }
+  
+  @override
+  Future<List<FileModel>> getUserFiles(String userId) async {
+    try {
+      final data = await _apiClient.getFiles();
+      final List<FileModel> files = [];
+      for (var file in data['files']) {
+        files.add(FileModel(
+          id: file['id'],
+          name: file['name'],
+          path: file['path'],
+          size: file['size'],
+          modifiedAt: DateTime.parse(file['modifiedAt']),
+          downloadUrl: file['downloadUrl'],
+        ));
+      }
+      return files;
+    } catch (e) {
+      print('Ошибка получения файлов: $e');
+      return [];
+    }
+  }
+  
+  @override
+  Future<FileModel?> uploadFile(File file, String fileName, String userId, {String? mimeType}) async {
+    try {
+      final data = await _apiClient.uploadFile(file, fileName);
+      
+      if (data['success'] == true) {
+        final fileData = data['file'];
+        return FileModel(
+          id: fileData['id'],
+          name: fileData['name'],
+          path: fileData['path'],
+          size: fileData['size'],
+          modifiedAt: DateTime.now(),
+          downloadUrl: fileData['downloadUrl'],
+        );
+      }
+      return null;
+    } catch (e) {
+      print('Ошибка загрузки: $e');
+      return null;
+    }
+  }
+  
+  @override
+  Future<bool> deleteFile(String filePath) async {
+    try {
+      final fileId = filePath.split('/').last;
+      await _apiClient.deleteFile(fileId);
+      return true;
+    } catch (e) {
+      print('Ошибка удаления: $e');
+      return false;
+    }
+  }
+  
+  @override
+  Future<String?> getDownloadUrl(String filePath) async {
+    try {
+      final fileId = filePath.split('/').last;
+      return await _apiClient.getDownloadUrl(fileId);
+    } catch (e) {
+      print('Ошибка получения URL: $e');
+      return null;
+    }
+  }
+}
+
 class WindowSizeManager {
   static const Size loginWindowSize = Size(400, 500);
   static const Size mainWindowSize = Size(900, 600);
   
   static void setWindowSize(Size size) {
-    // Для Windows Desktop
     if (WidgetsBinding.instance.platformDispatcher.views.isNotEmpty) {
       final view = WidgetsBinding.instance.platformDispatcher.views.first;
-      // Здесь можно задать размер окна, но в Flutter Desktop 
-      // прямое изменение размера окна через Dart ограничено
-      // Поэтому используем другой подход
     }
   }
 }
 
-// Глобальный ключ для доступа к навигатору из любого места
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
@@ -47,26 +170,28 @@ void main() async {
   );
   
   supabase = Supabase.instance.client;
-  storageService = SupabaseStorageService();
   
-  // Обработка глубоких ссылок
+  // 🔥 Создаём CloudStorageService с токеном
+  final cloudService = CloudStorageService();
+  final session = supabase.auth.currentSession;
+  if (session != null) {
+    cloudService.init(session.accessToken);
+  }
+  storageService = cloudService;
+  
   _handleDeepLinks(); 
 
-  // Конфигурация обновлений через GitHub Releases
   UpdateConfig().configure(
     updateJsonUrl: 'https://raw.githubusercontent.com/kirillStt/stepanov_new/main/updates.json',
   );
 
-  print('Используется Supabase');
+  print('Используется Supabase с backend на Vercel');
   runApp(const FileStorageApp());
 }
-
-
 
 void _handleDeepLinks() {
   final appLinks = AppLinks();
 
-  // Проверяем ссылку, с которой было запущено приложение
   appLinks.getInitialLink().then((Uri? initialUri) {
     if (initialUri != null && initialUri.toString().contains('code=')) {
       _showConfirmationDialog();
@@ -75,7 +200,6 @@ void _handleDeepLinks() {
     print('Ошибка получения начальной ссылки: $e');
   });
 
-  // Слушаем последующие ссылки, если приложение уже запущено
   appLinks.uriLinkStream.listen((Uri? uri) {
     if (uri != null && uri.toString().contains('code=')) {
       _showConfirmationDialog();
@@ -128,15 +252,10 @@ class _FileStorageAppState extends State<FileStorageApp> {
   @override
   void initState() {
     super.initState();
-    // Подписываемся на изменения размера окна
     _setupWindowListener();
   }
 
-  void _setupWindowListener() {
-    // В Flutter Desktop нет встроенного API для изменения размера окна
-    // Но мы можем использовать платформенные каналы
-    // Для простоты предлагаю установить размер при запуске через native код
-  }
+  void _setupWindowListener() {}
 
   @override
   Widget build(BuildContext context) {
@@ -153,6 +272,10 @@ class _FileStorageAppState extends State<FileStorageApp> {
           
           final session = supabase.auth.currentSession;
           if (session != null) {
+            // Обновляем токен в сервисе при смене сессии
+            if (storageService is CloudStorageService) {
+              (storageService as CloudStorageService).init(session.accessToken);
+            }
             final user = supabase.auth.currentUser;
             if (user != null && user.emailConfirmedAt == null) {
               return const EmailConfirmationScreen();
@@ -186,19 +309,14 @@ Future<void> _submit() async {
   
   try {
     if (_isLogin) {
-      // Вход через Supabase
       final response = await supabase.auth.signInWithPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
       
-      // После входа проверяем, подтверждён ли email
       if (response.user != null && response.user!.emailConfirmedAt == null) {
-        // Email не подтверждён - показываем предупреждение и выходим
         await supabase.auth.signOut();
-        
         setState(() => _isLoading = false);
-        
         if (mounted) {
           showDialog(
             context: context,
@@ -227,31 +345,23 @@ Future<void> _submit() async {
             ),
           );
         }
-        return; // Важно: выходим после показа диалога
+        return;
       }
-      
-      // Успешный вход
       setState(() => _isLoading = false);
-      
     } else {
-      // Регистрация через Supabase
       final response = await supabase.auth.signUp(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
       
-      // Проверяем, существует ли уже такой пользователь
       if (response.user != null && (response.user!.identities?.isEmpty ?? true)) {
         setState(() => _isLoading = false);
         _showMessage('Пользователь с таким email уже зарегистрирован', isError: true);
         return;
       }
       
-      // Если пользователь создан и требует подтверждения email
       if (response.user != null && response.session == null) {
         setState(() => _isLoading = false);
-        
-        // Показываем диалог и переходим к экрану ввода кода
         showDialog(
           context: context,
           barrierDismissible: false,
@@ -301,8 +411,6 @@ Future<void> _submit() async {
         );
         return;
       }
-      
-      // Если сессия создана сразу (email не требует подтверждения)
       setState(() => _isLoading = false);
       _showMessage('Регистрация успешна!');
     }
@@ -332,7 +440,6 @@ Future<void> _submit() async {
   }
 }
 
-  // Метод для сброса пароля
   Future<void> _resetPassword() async {
     final email = _emailController.text.trim();
     
@@ -345,7 +452,6 @@ Future<void> _submit() async {
     
     try {
       await supabase.auth.resetPasswordForEmail(email);
-      
       setState(() => _isLoading = false);
       
       showDialog(
@@ -700,7 +806,6 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
     return imageExtensions.contains(extension);
   }
   
-  // Переменные для фильтрации
   String searchQuery = '';
   String sizeFilter = 'all';
   String dateFilter = 'all';
@@ -716,10 +821,16 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
   String? get _userId => supabase.auth.currentUser?.id;
 
   Future<void> _loadFiles() async {
-    setState(() => isLoading = true);
+    // Проверка перед изменением состояния
+    if (mounted) setState(() => isLoading = true);
+    
     try {
       final userId = _userId ?? '';
       if (userId.isNotEmpty) {
+        final session = supabase.auth.currentSession;
+        if (session != null && storageService is CloudStorageService) {
+          (storageService as CloudStorageService).init(session.accessToken);
+        }
         files = await storageService.getUserFiles(userId);
         filteredFiles = List.from(files);
         print('Загружено файлов: ${files.length}');
@@ -727,7 +838,8 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
     } catch (e) {
       print('Ошибка загрузки файлов: $e');
     } finally {
-      setState(() => isLoading = false);
+      // Проверка перед изменением состояния
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
@@ -823,90 +935,88 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
   }
 
   Future<void> pickAndUploadFile() async {
-  setState(() => isLoading = true);
-  try {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(
-      withData: false, // Не загружаем в память, работаем с путем
-    );
+    if (mounted) setState(() => isLoading = true);
     
-    if (result != null) {
-      // Получаем выбранный файл
-      final platformFile = result.files.single;
-      final String fileName = platformFile.name;
-      final String? filePath = platformFile.path;
-      
-      if (filePath == null) {
-        _showMessage('Не удалось получить путь к файлу', isError: true);
-        setState(() => isLoading = false);
-        return;
-      }
-      
-      final File file = File(filePath);
-      final String userId = _userId ?? '';
-      
-      if (userId.isEmpty) {
-        _showMessage('Пользователь не авторизован', isError: true);
-        setState(() => isLoading = false);
-        return;
-      }
-      
-      print('Загрузка файла: $fileName');
-      print('Путь к файлу: $filePath');
-      
-      // Определяем MIME-тип для Supabase
-      String? mimeType;
-      final extension = fileName.split('.').last.toLowerCase();
-      
-      // Базовые MIME-типы
-      switch (extension) {
-        case 'png':
-          mimeType = 'image/png';
-          break;
-        case 'jpg':
-        case 'jpeg':
-          mimeType = 'image/jpeg';
-          break;
-        case 'gif':
-          mimeType = 'image/gif';
-          break;
-        case 'pdf':
-          mimeType = 'application/pdf';
-          break;
-        case 'txt':
-          mimeType = 'text/plain';
-          break;
-        case 'torrent':
-          mimeType = 'application/x-bittorrent';
-          break;
-        default:
-          mimeType = 'application/octet-stream'; // Универсальный тип
-      }
-      
-      // Загружаем файл через ваш StorageService
-      final uploaded = await storageService.uploadFile(
-        file, 
-        fileName, 
-        userId,
-        mimeType: mimeType, // Передаем MIME-тип
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        withData: false,
       );
       
-      if (uploaded != null) {
-        setState(() {
-          files.insert(0, uploaded);
-          filteredFiles.insert(0, uploaded);
-        });
-        _showMessage('Файл "${uploaded.name}" загружен');
-      } else {
-        _showMessage('Не удалось загрузить файл', isError: true);
+      if (result != null) {
+        final platformFile = result.files.single;
+        final String fileName = platformFile.name;
+        final String? filePath = platformFile.path;
+        
+        if (filePath == null) {
+          _showMessage('Не удалось получить путь к файлу', isError: true);
+          if (mounted) setState(() => isLoading = false);
+          return;
+        }
+        
+        final File file = File(filePath);
+        final String userId = _userId ?? '';
+        
+        if (userId.isEmpty) {
+          _showMessage('Пользователь не авторизован', isError: true);
+          if (mounted) setState(() => isLoading = false);
+          return;
+        }
+        
+        print('Загрузка файла: $fileName');
+        
+        String? mimeType;
+        final extension = fileName.split('.').last.toLowerCase();
+        
+        switch (extension) {
+          case 'png':
+            mimeType = 'image/png';
+            break;
+          case 'jpg':
+          case 'jpeg':
+            mimeType = 'image/jpeg';
+            break;
+          case 'gif':
+            mimeType = 'image/gif';
+            break;
+          case 'pdf':
+            mimeType = 'application/pdf';
+            break;
+          case 'txt':
+            mimeType = 'text/plain';
+            break;
+          case 'torrent':
+            mimeType = 'application/x-bittorrent';
+            break;
+          default:
+            mimeType = 'application/octet-stream';
+        }
+        
+        final uploaded = await storageService.uploadFile(
+          file, 
+          fileName, 
+          userId,
+          mimeType: mimeType,
+        );
+        
+        if (uploaded != null) {
+          if (mounted) {
+            setState(() {
+              files.insert(0, uploaded);
+              filteredFiles.insert(0, uploaded);
+            });
+          }
+          _showMessage('Файл "${uploaded.name}" загружен');
+        } else {
+          _showMessage('Не удалось загрузить файл', isError: true);
+        }
       }
+    } catch (e) {
+      print('Ошибка загрузки: $e');
+      _showMessage('Ошибка: ${e.toString()}', isError: true);
+    } finally {
+      if (mounted) setState(() => isLoading = false);
     }
-  } catch (e) {
-    print('Ошибка загрузки: $e');
-    _showMessage('Ошибка: ${e.toString()}', isError: true);
-  } finally {
-    setState(() => isLoading = false);
   }
-}
 
   Future<void> _downloadFile(FileModel file) async {
     try {
@@ -935,13 +1045,19 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
         if (response.statusCode == 200) {
           final fileBytes = await consolidateHttpClientResponseBytes(response);
           await File(outputPath).writeAsBytes(fileBytes);
-          _showMessage('Файл сохранён');
+          if (mounted) {
+            _showMessage('Файл сохранён');
+          }
         } else {
-          _showMessage('Ошибка скачивания: ${response.statusCode}', isError: true);
+          if (mounted) {
+            _showMessage('Ошибка скачивания: ${response.statusCode}', isError: true);
+          }
         }
       }
     } catch (e) {
-      _showMessage('Ошибка при сохранении: $e', isError: true);
+      if (mounted) {
+        _showMessage('Ошибка при сохранении: $e', isError: true);
+      }
     }
   }
 
@@ -1051,283 +1167,273 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
     );
   }
 
-@override
-Widget build(BuildContext context) {
-  return Scaffold(
-    appBar: AppBar(
-      title: const Text('Stepanov'),
-      actions: [
-        // Объединяем фильтры и обновление в один PopupMenu
-        PopupMenuButton<String>(
-          icon: const Icon(Icons.more_vert),
-          tooltip: 'Меню',
-          onSelected: (value) {
-            if (value == 'refresh') {
-              _loadFiles();
-            } else if (value == 'filter') {
-              setState(() {
-                isFilterVisible = !isFilterVisible;
-              });
-            } else if (value == 'password') {
-              _navigateToChangePassword();
-            } else if (value == 'logout') {
-              _logout();
-            }
-          },
-          itemBuilder: (context) => [
-            const PopupMenuItem(
-              value: 'filter',
-              child: Row(
-                children: [
-                  Icon(Icons.filter_alt, color: Colors.blue, size: 20),
-                  SizedBox(width: 8),
-                  Text('Фильтры'),
-                ],
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Stepanov'),
+        actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            tooltip: 'Меню',
+            onSelected: (value) {
+              if (value == 'refresh') {
+                _loadFiles();
+              } else if (value == 'filter') {
+                setState(() {
+                  isFilterVisible = !isFilterVisible;
+                });
+              } else if (value == 'password') {
+                _navigateToChangePassword();
+              } else if (value == 'logout') {
+                _logout();
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'filter',
+                child: Row(
+                  children: [
+                    Icon(Icons.filter_alt, color: Colors.blue, size: 20),
+                    SizedBox(width: 8),
+                    Text('Фильтры'),
+                  ],
+                ),
               ),
-            ),
-            const PopupMenuItem(
-              value: 'refresh',
-              child: Row(
-                children: [
-                  Icon(Icons.refresh, color: Colors.green, size: 20),
-                  SizedBox(width: 8),
-                  Text('Обновить'),
-                ],
+              const PopupMenuItem(
+                value: 'refresh',
+                child: Row(
+                  children: [
+                    Icon(Icons.refresh, color: Colors.green, size: 20),
+                    SizedBox(width: 8),
+                    Text('Обновить'),
+                  ],
+                ),
               ),
-            ),
-            const PopupMenuItem(
-              value: 'password',
-              child: Row(
-                children: [
-                  Icon(Icons.password, color: Colors.orange, size: 20),
-                  SizedBox(width: 8),
-                  Text('Сменить пароль'),
-                ],
+              const PopupMenuItem(
+                value: 'password',
+                child: Row(
+                  children: [
+                    Icon(Icons.password, color: Colors.orange, size: 20),
+                    SizedBox(width: 8),
+                    Text('Сменить пароль'),
+                  ],
+                ),
               ),
-            ),
-            const PopupMenuItem(
-              value: 'logout',
-              child: Row(
-                children: [
-                  Icon(Icons.logout, color: Colors.red, size: 20),
-                  SizedBox(width: 8),
-                  Text('Выйти', style: TextStyle(color: Colors.red)),
-                ],
+              const PopupMenuItem(
+                value: 'logout',
+                child: Row(
+                  children: [
+                    Icon(Icons.logout, color: Colors.red, size: 20),
+                    SizedBox(width: 8),
+                    Text('Выйти', style: TextStyle(color: Colors.red)),
+                  ],
+                ),
               ),
-            ),
-          ], // ← Закрываем список itemBuilder
-        ), // ← Закрываем PopupMenuButton
-      ], // ← Закрываем actions
-    ), // ← Закрываем AppBar
-    body: Column(
-      children: [
-        if (isFilterVisible)
-  Container(
-    color: Colors.grey[100],
-    padding: const EdgeInsets.all(12),
-    child: Column(
-      children: [
-        // Поиск по имени
-        TextField(
-          decoration: const InputDecoration(
-            labelText: 'Поиск по имени',
-            prefixIcon: Icon(Icons.search),
-            border: OutlineInputBorder(),
+            ],
           ),
-          onChanged: (value) {
-            searchQuery = value;
-            _applyFilters();
-          },
-        ),
-        const SizedBox(height: 12),
-        
-        // Фильтр по размеру
-        Row(
-          children: [
-            const Text('Размер:', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(width: 12),
-            Expanded(
-              child: DropdownButton<String>(
-                value: sizeFilter,
-                isExpanded: true,
-                items: const [
-                  DropdownMenuItem(value: 'all', child: Text('Все')),
-                  DropdownMenuItem(value: 'small', child: Text('До 1 МБ')),
-                  DropdownMenuItem(value: 'medium', child: Text('1-10 МБ')),
-                  DropdownMenuItem(value: 'large', child: Text('Больше 10 МБ')),
-                ],
-                onChanged: (value) {
-                  setState(() {
-                    sizeFilter = value!;
-                    _applyFilters();
-                  });
-                },
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        
-        // Фильтр по дате
-        Row(
-          children: [
-            const Text('Дата:', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(width: 12),
-            Expanded(
-              child: DropdownButton<String>(
-                value: dateFilter,
-                isExpanded: true,
-                items: const [
-                  DropdownMenuItem(value: 'all', child: Text('За всё время')),
-                  DropdownMenuItem(value: 'today', child: Text('Сегодня')),
-                  DropdownMenuItem(value: 'week', child: Text('Последние 7 дней')),
-                  DropdownMenuItem(value: 'month', child: Text('Последние 30 дней')),
-                ],
-                onChanged: (value) {
-                  setState(() {
-                    dateFilter = value!;
-                    _applyFilters();
-                  });
-                },
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        
-        // Фильтр по типу
-        Row(
-          children: [
-            const Text('Тип:', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(width: 12),
-            Expanded(
-              child: DropdownButton<String>(
-                value: typeFilter,
-                isExpanded: true,
-                items: const [
-                  DropdownMenuItem(value: 'all', child: Text('Все')),
-                  DropdownMenuItem(value: 'image', child: Text('Изображения')),
-                  DropdownMenuItem(value: 'document', child: Text('Документы')),
-                  DropdownMenuItem(value: 'archive', child: Text('Архивы')),
-                  DropdownMenuItem(value: 'other', child: Text('Другое')),
-                ],
-                onChanged: (value) {
-                  setState(() {
-                    typeFilter = value!;
-                    _applyFilters();
-                  });
-                },
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        
-        // Кнопка сброса
-        TextButton.icon(
-          onPressed: _resetFilters,
-          icon: const Icon(Icons.clear),
-          label: const Text('Сбросить фильтры'),
-        ),
-      ],
-    ),
-  ),
-        Expanded(
-          child: isLoading
-              ? const Center(child: CircularProgressIndicator())
-              : filteredFiles.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.cloud_upload, size: 80, color: Colors.grey),
-                          const SizedBox(height: 20),
-                          Text(
-                            files.isEmpty ? 'Нет файлов' : 'Нет файлов по выбранным фильтрам',
-                            style: const TextStyle(fontSize: 18, color: Colors.grey),
-                          ),
-                          const SizedBox(height: 10),
-                          ElevatedButton(
-                            onPressed: files.isEmpty ? pickAndUploadFile : _resetFilters,
-                            child: Text(files.isEmpty ? 'Загрузить файл' : 'Сбросить фильтры'),
-                          ),
-                        ],
-                      ),
-                    )
-                  : ListView.builder(
-                      itemCount: filteredFiles.length,
-                      itemBuilder: (context, index) {
-                        final file = filteredFiles[index];
-                        return Card(
-                          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          child: ListTile(
-                            leading: const Icon(Icons.insert_drive_file, color: Colors.blue),
-                            title: Text(
-                              file.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text('${file.readableSize} • ${_formatDate(file.modifiedAt)}'),
-                            onTap: _isImageFile(file.name) 
-                              ? () async {
-                                  String? imageUrl = file.downloadUrl;
-                                  if (imageUrl == null) {
-                                    imageUrl = await storageService.getDownloadUrl(file.path);
-                                  }
-                                  
-                                  if (imageUrl != null && imageUrl.isNotEmpty) {
-                                    final String validUrl = imageUrl;
-                                    
-                                    if (context.mounted) {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (context) => ImagePreviewScreen(
-                                            file: file,
-                                            imageUrl: validUrl,
-                                          ),
-                                        ),
-                                      );
-                                    }
-                                  } else {
-                                    _showMessage('Не удалось загрузить изображение', isError: true);
-                                  }
-                                }
-                              : null,
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  icon: const Icon(Icons.download, color: Colors.green),
-                                  onPressed: () => _downloadFile(file),
-                                  tooltip: 'Скачать',
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.share, color: Colors.blue),
-                                  onPressed: () => _shareFile(file),
-                                  tooltip: 'Поделиться',
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.delete, color: Colors.red),
-                                  onPressed: () => _deleteFile(index),
-                                  tooltip: 'Удалить',
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
+        ],
+      ),
+      body: Column(
+        children: [
+          if (isFilterVisible)
+            Container(
+              color: Colors.grey[100],
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  TextField(
+                    decoration: const InputDecoration(
+                      labelText: 'Поиск по имени',
+                      prefixIcon: Icon(Icons.search),
+                      border: OutlineInputBorder(),
                     ),
-        ),
-      ],
-    ),
-    floatingActionButton: FloatingActionButton(
-      onPressed: pickAndUploadFile,
-      tooltip: 'Загрузить файл',
-      child: const Icon(Icons.add),
-    ),
-  );
-}
+                    onChanged: (value) {
+                      searchQuery = value;
+                      _applyFilters();
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      const Text('Размер:', style: TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DropdownButton<String>(
+                          value: sizeFilter,
+                          isExpanded: true,
+                          items: const [
+                            DropdownMenuItem(value: 'all', child: Text('Все')),
+                            DropdownMenuItem(value: 'small', child: Text('До 1 МБ')),
+                            DropdownMenuItem(value: 'medium', child: Text('1-10 МБ')),
+                            DropdownMenuItem(value: 'large', child: Text('Больше 10 МБ')),
+                          ],
+                          onChanged: (value) {
+                            setState(() {
+                              sizeFilter = value!;
+                              _applyFilters();
+                            });
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Text('Дата:', style: TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DropdownButton<String>(
+                          value: dateFilter,
+                          isExpanded: true,
+                          items: const [
+                            DropdownMenuItem(value: 'all', child: Text('За всё время')),
+                            DropdownMenuItem(value: 'today', child: Text('Сегодня')),
+                            DropdownMenuItem(value: 'week', child: Text('Последние 7 дней')),
+                            DropdownMenuItem(value: 'month', child: Text('Последние 30 дней')),
+                          ],
+                          onChanged: (value) {
+                            setState(() {
+                              dateFilter = value!;
+                              _applyFilters();
+                            });
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Text('Тип:', style: TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DropdownButton<String>(
+                          value: typeFilter,
+                          isExpanded: true,
+                          items: const [
+                            DropdownMenuItem(value: 'all', child: Text('Все')),
+                            DropdownMenuItem(value: 'image', child: Text('Изображения')),
+                            DropdownMenuItem(value: 'document', child: Text('Документы')),
+                            DropdownMenuItem(value: 'archive', child: Text('Архивы')),
+                            DropdownMenuItem(value: 'other', child: Text('Другое')),
+                          ],
+                          onChanged: (value) {
+                            setState(() {
+                              typeFilter = value!;
+                              _applyFilters();
+                            });
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  TextButton.icon(
+                    onPressed: _resetFilters,
+                    icon: const Icon(Icons.clear),
+                    label: const Text('Сбросить фильтры'),
+                  ),
+                ],
+              ),
+            ),
+          Expanded(
+            child: isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : filteredFiles.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.cloud_upload, size: 80, color: Colors.grey),
+                            const SizedBox(height: 20),
+                            Text(
+                              files.isEmpty ? 'Нет файлов' : 'Нет файлов по выбранным фильтрам',
+                              style: const TextStyle(fontSize: 18, color: Colors.grey),
+                            ),
+                            const SizedBox(height: 10),
+                            ElevatedButton(
+                              onPressed: files.isEmpty ? pickAndUploadFile : _resetFilters,
+                              child: Text(files.isEmpty ? 'Загрузить файл' : 'Сбросить фильтры'),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: filteredFiles.length,
+                        itemBuilder: (context, index) {
+                          final file = filteredFiles[index];
+                          return Card(
+                            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            child: ListTile(
+                              leading: const Icon(Icons.insert_drive_file, color: Colors.blue),
+                              title: Text(
+                                file.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: Text('${file.readableSize} • ${_formatDate(file.modifiedAt)}'),
+                              onTap: _isImageFile(file.name) 
+                                ? () async {
+                                    String? imageUrl = file.downloadUrl;
+                                    if (imageUrl == null) {
+                                      imageUrl = await storageService.getDownloadUrl(file.path);
+                                    }
+                                    
+                                    if (imageUrl != null && imageUrl.isNotEmpty) {
+                                      final String validUrl = imageUrl;
+                                      
+                                      if (context.mounted) {
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (context) => ImagePreviewScreen(
+                                              file: file,
+                                              imageUrl: validUrl,
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                    } else {
+                                      _showMessage('Не удалось загрузить изображение', isError: true);
+                                    }
+                                  }
+                                : null,
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.download, color: Colors.green),
+                                    onPressed: () => _downloadFile(file),
+                                    tooltip: 'Скачать',
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.share, color: Colors.blue),
+                                    onPressed: () => _shareFile(file),
+                                    tooltip: 'Поделиться',
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete, color: Colors.red),
+                                    onPressed: () => _deleteFile(index),
+                                    tooltip: 'Удалить',
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: pickAndUploadFile,
+        tooltip: 'Загрузить файл',
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
 
   String _formatDate(DateTime date) {
     return '${date.day.toString().padLeft(2, '0')}.${date.month.toString().padLeft(2, '0')}.${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
@@ -1476,12 +1582,12 @@ class ChangePasswordScreen extends StatefulWidget {
 // ========== ЭКРАН ПОДТВЕРЖДЕНИЯ EMAIL ==========
 class EmailVerificationScreen extends StatefulWidget {
   final SupabaseClient supabase;
-  final String email; // Добавляем email пользователя
+  final String email;
   
   const EmailVerificationScreen({
     super.key, 
     required this.supabase,
-    required this.email, // Обязательный параметр
+    required this.email,
   });
 
   @override
@@ -1503,16 +1609,14 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // Используем email из параметров, а не из currentUser
       final response = await widget.supabase.auth.verifyOTP(
         type: OtpType.email,
         token: token,
-        email: widget.email, // Используем переданный email
+        email: widget.email,
       );
 
       if (response.user != null) {
         _showMessage('Email успешно подтверждён!');
-        // После подтверждения перенаправляем на экран входа
         Navigator.popUntil(context, (route) => route.isFirst);
       } else {
         _showMessage('Неверный код подтверждения', isError: true);
@@ -1558,7 +1662,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              'Код отправлен на: ${widget.email}', // Показываем email
+              'Код отправлен на: ${widget.email}',
               textAlign: TextAlign.center,
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
             ),

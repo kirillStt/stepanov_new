@@ -10,25 +10,22 @@ jobs:
     runs-on: windows-latest
     
     steps:
-      # Шаг 1: Загружаем код
+      # 1. Загружаем код
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Шаг 2: Проверяем наличие pubspec.yaml
-      - name: Verify project structure
-        run: |
-          echo "Current directory: $(pwd)"
-          echo "Files in root:"
-          dir
-          if (Test-Path "pubspec.yaml") {
-            echo "✅ pubspec.yaml found"
-            Get-Content pubspec.yaml -TotalCount 5
-          } else {
-            echo "❌ pubspec.yaml NOT found!"
-            exit 1
-          }
+      # 2. Кэш для Flutter SDK
+      - name: Cache Flutter SDK
+        uses: actions/cache@v3
+        with:
+          path: |
+            ${{ runner.tool_cache }}/flutter
+            ~/.pub-cache
+          key: ${{ runner.os }}-flutter-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-flutter-
 
-      # Шаг 3: Устанавливаем Flutter
+      # 3. Установка Flutter с кэшированием
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -36,29 +33,24 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # Шаг 4: Проверяем Flutter
-      - name: Flutter doctor
-        run: flutter doctor -v
-
-      # Шаг 5: Получаем зависимости
+      # 4. Получение зависимостей
       - name: Get dependencies
         run: flutter pub get
 
-      # Шаг 6: Собираем Windows
+      # 5. Сборка Windows
       - name: Build Windows
         run: flutter build windows --release
 
-      # Шаг 7: Создаем ZIP
+      # 6. Создание ZIP архива
       - name: Create ZIP archive
         run: |
           cd build\windows\x64\runner\Release
           Compress-Archive -Path * -DestinationPath "$env:GITHUB_WORKSPACE\stepanov_new-$env:GITHUB_REF_NAME-windows.zip"
 
-      # Шаг 8: Создаем релиз
+      # 7. Создание релиза на GitHub
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: stepanov_new-*.zip
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN }}
