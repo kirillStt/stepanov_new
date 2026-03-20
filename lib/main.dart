@@ -8,17 +8,64 @@ import 'package:share_plus/share_plus.dart';
 import 'package:cross_file/cross_file.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:dio/dio.dart' as dio;
+import 'package:provider/provider.dart';
 import 'core/models/file_model.dart';
 import 'services/storage_service.dart';
 import 'services/supabase_storage_service.dart';
 import 'screens/email_confirmation_screen.dart';
 import 'package:app_links/app_links.dart';
 import 'package:flutter_desktop_updater/flutter_desktop_updater.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 late StorageService storageService;
 late SupabaseClient supabase;
 
-// ========== API КЛИЕНТ ДЛЯ BACKEND НА VERCEL ==========
+// ========== КЛАСС ДЛЯ УПРАВЛЕНИЯ ТЕМОЙ ==========
+class ThemeProvider extends ChangeNotifier {
+  ThemeMode _themeMode = ThemeMode.system;
+  
+  ThemeMode get themeMode => _themeMode;
+  
+  bool get isDarkMode {
+    if (_themeMode == ThemeMode.system) {
+      return WidgetsBinding.instance.platformDispatcher.platformBrightness == Brightness.dark;
+    }
+    return _themeMode == ThemeMode.dark;
+  }
+  
+  void setThemeMode(ThemeMode mode) {
+    _themeMode = mode;
+    notifyListeners();
+    _saveThemePreference();
+  }
+  
+  void toggleTheme() {
+    if (_themeMode == ThemeMode.light) {
+      setThemeMode(ThemeMode.dark);
+    } else if (_themeMode == ThemeMode.dark) {
+      setThemeMode(ThemeMode.light);
+    } else {
+      setThemeMode(ThemeMode.light);
+    }
+  }
+  
+  Future<void> _saveThemePreference() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('theme_mode', _themeMode.name);
+  }
+  
+  Future<void> loadThemePreference() async {
+    final prefs = await SharedPreferences.getInstance();
+    final themeName = prefs.getString('theme_mode');
+    if (themeName != null) {
+      _themeMode = ThemeMode.values.firstWhere(
+        (e) => e.name == themeName,
+        orElse: () => ThemeMode.system,
+      );
+    }
+  }
+}
+
 // ========== API КЛИЕНТ ДЛЯ BACKEND НА VERCEL ==========
 class ApiClient {
   static const String baseUrl = 'https://stepanov-backend.vercel.app/api';
@@ -68,7 +115,7 @@ class ApiClient {
   }
 }
 
-// ========== НОВАЯ РЕАЛИЗАЦИЯ CloudStorageService ==========
+// ========== РЕАЛИЗАЦИЯ CloudStorageService ==========
 class CloudStorageService implements StorageService {
   final ApiClient _apiClient = ApiClient();
   
@@ -161,11 +208,9 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Получаем переменные из --dart-define
   const supabaseUrl = String.fromEnvironment('SUPABASE_URL');
   const supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
   
-  // Проверка, что переменные переданы
   if (supabaseUrl.isEmpty || supabaseAnonKey.isEmpty) {
     throw Exception(
       'Missing environment variables!\n'
@@ -177,7 +222,6 @@ void main() async {
   print('SUPABASE_URL: $supabaseUrl');
   print('SUPABASE_ANON_KEY: ${supabaseAnonKey.substring(0, 10)}...');
   
-  // Инициализируем Supabase с переданными переменными
   await Supabase.initialize(
     url: supabaseUrl,
     anonKey: supabaseAnonKey,
@@ -185,7 +229,6 @@ void main() async {
   
   supabase = Supabase.instance.client;
   
-  // Создаём CloudStorageService с токеном
   final cloudService = CloudStorageService();
   final session = supabase.auth.currentSession;
   if (session != null) {
@@ -263,9 +306,13 @@ class FileStorageApp extends StatefulWidget {
 }
 
 class _FileStorageAppState extends State<FileStorageApp> {
+  late ThemeProvider _themeProvider;
+
   @override
   void initState() {
     super.initState();
+    _themeProvider = ThemeProvider();
+    _themeProvider.loadThemePreference();
     _setupWindowListener();
   }
 
@@ -273,38 +320,121 @@ class _FileStorageAppState extends State<FileStorageApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      navigatorKey: navigatorKey,
-      title: 'Stepanov',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: StreamBuilder<AuthState>(
-        stream: supabase.auth.onAuthStateChange,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          
-          final session = supabase.auth.currentSession;
-          if (session != null) {
-            // Обновляем токен в сервисе при смене сессии
-            if (storageService is CloudStorageService) {
-              (storageService as CloudStorageService).init(session.accessToken);
-            }
-            final user = supabase.auth.currentUser;
-            if (user != null && user.emailConfirmedAt == null) {
-              return const EmailConfirmationScreen();
-            }
-            return const FileManagerScreen();
-          }
-          return const AuthScreen();
+    return ChangeNotifierProvider.value(
+      value: _themeProvider,
+      child: Consumer<ThemeProvider>(
+        builder: (context, provider, child) {
+          return MaterialApp(
+            navigatorKey: navigatorKey,
+            title: 'Stepanov',
+            theme: _lightTheme(),
+            darkTheme: _darkTheme(),
+            themeMode: provider.themeMode,
+            home: StreamBuilder<AuthState>(
+              stream: supabase.auth.onAuthStateChange,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                
+                final session = supabase.auth.currentSession;
+                if (session != null) {
+                  if (storageService is CloudStorageService) {
+                    (storageService as CloudStorageService).init(session.accessToken);
+                  }
+                  final user = supabase.auth.currentUser;
+                  if (user != null && user.emailConfirmedAt == null) {
+                    return const EmailConfirmationScreen();
+                  }
+                  return const FileManagerScreen();
+                }
+                return const AuthScreen();
+              },
+            ),
+            debugShowCheckedModeBanner: false,
+          );
         },
       ),
-      debugShowCheckedModeBanner: false,
     );
   }
 }
 
-// ========== ЭКРАН АВТОРИЗАЦИИ (SUPABASE) ==========
+// ========== ТЕМЫ ==========
+ThemeData _lightTheme() {
+  return ThemeData(
+    brightness: Brightness.light,
+    primarySwatch: Colors.blue,
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: Colors.blue,
+      brightness: Brightness.light,
+    ),
+    appBarTheme: const AppBarTheme(
+      elevation: 0,
+      centerTitle: false,
+    ),
+    cardTheme: CardThemeData(
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      filled: true,
+      fillColor: Colors.grey.shade50,
+    ),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: ElevatedButton.styleFrom(
+        minimumSize: const Size(double.infinity, 50),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+    ),
+    useMaterial3: true,
+  );
+}
+
+ThemeData _darkTheme() {
+  return ThemeData(
+    brightness: Brightness.dark,
+    primarySwatch: Colors.blue,
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: Colors.blue,
+      brightness: Brightness.dark,
+    ),
+    appBarTheme: const AppBarTheme(
+      elevation: 0,
+      centerTitle: false,
+    ),
+    cardTheme: CardThemeData(
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      filled: true,
+      fillColor: Colors.grey.shade800,
+    ),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: ElevatedButton.styleFrom(
+        minimumSize: const Size(double.infinity, 50),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+    ),
+    useMaterial3: true,
+  );
+}
+
+// ========== ЭКРАН АВТОРИЗАЦИИ ==========
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
 
@@ -318,141 +448,141 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _isLogin = true;
   bool _isLoading = false;
 
-Future<void> _submit() async {
-  setState(() => _isLoading = true);
-  
-  try {
-    if (_isLogin) {
-      final response = await supabase.auth.signInWithPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text.trim(),
-      );
-      
-      if (response.user != null && response.user!.emailConfirmedAt == null) {
-        await supabase.auth.signOut();
+  Future<void> _submit() async {
+    setState(() => _isLoading = true);
+    
+    try {
+      if (_isLogin) {
+        final response = await supabase.auth.signInWithPassword(
+          email: _emailController.text.trim(),
+          password: _passwordController.text.trim(),
+        );
+        
+        if (response.user != null && response.user!.emailConfirmedAt == null) {
+          await supabase.auth.signOut();
+          setState(() => _isLoading = false);
+          if (mounted) {
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (context) => AlertDialog(
+                title: const Text('Email не подтверждён'),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Пожалуйста, подтвердите ваш email, перейдя по ссылке в письме.',
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      _emailController.text.trim(),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Ок'),
+                  ),
+                ],
+              ),
+            );
+          }
+          return;
+        }
         setState(() => _isLoading = false);
-        if (mounted) {
+      } else {
+        final response = await supabase.auth.signUp(
+          email: _emailController.text.trim(),
+          password: _passwordController.text.trim(),
+        );
+        
+        if (response.user != null && (response.user!.identities?.isEmpty ?? true)) {
+          setState(() => _isLoading = false);
+          _showMessage('Пользователь с таким email уже зарегистрирован', isError: true);
+          return;
+        }
+        
+        if (response.user != null && response.session == null) {
+          setState(() => _isLoading = false);
           showDialog(
             context: context,
             barrierDismissible: false,
             builder: (context) => AlertDialog(
-              title: const Text('Email не подтверждён'),
+              title: const Text('Подтвердите email'),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Пожалуйста, подтвердите ваш email, перейдя по ссылке в письме.',
+                    'На указанный адрес отправлено письмо с кодом подтверждения.',
+                    style: TextStyle(fontSize: 16),
                   ),
                   const SizedBox(height: 16),
                   Text(
                     _emailController.text.trim(),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Введите код из письма на следующем экране.',
+                    style: TextStyle(fontSize: 14, color: Colors.grey),
                   ),
                 ],
               ),
               actions: [
                 TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Ок'),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => EmailVerificationScreen(
+                          supabase: supabase,
+                          email: _emailController.text.trim(),
+                        ),
+                      ),
+                    );
+                  },
+                  child: const Text('Ввести код'),
                 ),
               ],
             ),
           );
+          return;
         }
-        return;
-      }
-      setState(() => _isLoading = false);
-    } else {
-      final response = await supabase.auth.signUp(
-        email: _emailController.text.trim(),
-        password: _passwordController.text.trim(),
-      );
-      
-      if (response.user != null && (response.user!.identities?.isEmpty ?? true)) {
         setState(() => _isLoading = false);
-        _showMessage('Пользователь с таким email уже зарегистрирован', isError: true);
-        return;
+        _showMessage('Регистрация успешна!');
+      }
+    } on AuthException catch (e) {
+      String message;
+      
+      if (e.message.contains('Invalid login credentials')) {
+        message = 'Неверный email или пароль';
+      } else if (e.message.contains('Email not confirmed')) {
+        message = 'Email не подтверждён. Проверьте почту';
+      } else if (e.message.contains('User already registered')) {
+        message = 'Пользователь с таким email уже зарегистрирован';
+      } else if (e.message.contains('Password should be at least 6 characters')) {
+        message = 'Пароль должен быть не менее 6 символов';
+      } else if (e.message.contains('rate limit')) {
+        message = 'Слишком много попыток. Попробуйте позже';
+      } else {
+        message = 'Ошибка: ${e.message}';
       }
       
-      if (response.user != null && response.session == null) {
-        setState(() => _isLoading = false);
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            title: const Text('Подтвердите email'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'На указанный адрес отправлено письмо с кодом подтверждения.',
-                  style: TextStyle(fontSize: 16),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  _emailController.text.trim(),
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                const Text(
-                  'Введите код из письма на следующем экране.',
-                  style: TextStyle(fontSize: 14, color: Colors.grey),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => EmailVerificationScreen(
-                        supabase: supabase,
-                        email: _emailController.text.trim(),
-                      ),
-                    ),
-                  );
-                },
-                child: const Text('Ввести код'),
-              ),
-            ],
-          ),
-        );
-        return;
-      }
       setState(() => _isLoading = false);
-      _showMessage('Регистрация успешна!');
+      _showMessage(message, isError: true);
+      
+    } catch (e) {
+      setState(() => _isLoading = false);
+      _showMessage('Ошибка: $e', isError: true);
     }
-  } on AuthException catch (e) {
-    String message;
-    
-    if (e.message.contains('Invalid login credentials')) {
-      message = 'Неверный email или пароль';
-    } else if (e.message.contains('Email not confirmed')) {
-      message = 'Email не подтверждён. Проверьте почту';
-    } else if (e.message.contains('User already registered')) {
-      message = 'Пользователь с таким email уже зарегистрирован';
-    } else if (e.message.contains('Password should be at least 6 characters')) {
-      message = 'Пароль должен быть не менее 6 символов';
-    } else if (e.message.contains('rate limit')) {
-      message = 'Слишком много попыток. Попробуйте позже';
-    } else {
-      message = 'Ошибка: ${e.message}';
-    }
-    
-    setState(() => _isLoading = false);
-    _showMessage(message, isError: true);
-    
-  } catch (e) {
-    setState(() => _isLoading = false);
-    _showMessage('Ошибка: $e', isError: true);
   }
-}
 
   Future<void> _resetPassword() async {
     final email = _emailController.text.trim();
@@ -835,9 +965,7 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
   String? get _userId => supabase.auth.currentUser?.id;
 
   Future<void> _loadFiles() async {
-    // Проверка перед изменением состояния
     if (mounted) setState(() => isLoading = true);
-    
     try {
       final userId = _userId ?? '';
       if (userId.isNotEmpty) {
@@ -846,13 +974,33 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
           (storageService as CloudStorageService).init(session.accessToken);
         }
         files = await storageService.getUserFiles(userId);
+        
+        print('Загружено файлов из Supabase: ${files.length}');
+        
+        final prefs = await SharedPreferences.getInstance();
+        for (int i = 0; i < files.length; i++) {
+          final savedName = prefs.getString('file_name_${files[i].id}');
+          if (savedName != null && savedName.isNotEmpty) {
+            print('   Восстанавливаем имя: ${files[i].name} -> $savedName');
+            files[i] = FileModel(
+              id: files[i].id,
+              name: savedName,
+              path: files[i].path,
+              size: files[i].size,
+              modifiedAt: files[i].modifiedAt,
+              downloadUrl: files[i].downloadUrl,
+            );
+          } else {
+            print('   Имя из Supabase: ${files[i].name}');
+          }
+        }
+        
         filteredFiles = List.from(files);
         print('Загружено файлов: ${files.length}');
       }
     } catch (e) {
       print('Ошибка загрузки файлов: $e');
     } finally {
-      // Проверка перед изменением состояния
       if (mounted) setState(() => isLoading = false);
     }
   }
@@ -948,6 +1096,32 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
     );
   }
 
+  Future<bool> _showOverwriteDialog(String fileName) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Файл уже существует'),
+        content: Text(
+          'Файл "$fileName" уже загружен.\n\nХотите заменить его?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.orange,
+            ),
+            child: const Text('Заменить'),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
   Future<void> pickAndUploadFile() async {
     if (mounted) setState(() => isLoading = true);
     
@@ -967,7 +1141,6 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
           return;
         }
         
-        final File file = File(filePath);
         final String userId = _userId ?? '';
         
         if (userId.isEmpty) {
@@ -976,7 +1149,20 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
           return;
         }
         
+        // Проверка на дубликат
+        final bool fileExists = files.any((file) => file.name == fileName);
+        if (fileExists) {
+          final bool overwrite = await _showOverwriteDialog(fileName);
+          if (!overwrite) {
+            if (mounted) setState(() => isLoading = false);
+            _showMessage('Загрузка отменена', isError: false);
+            return;
+          }
+        }
+        
         print('Загрузка файла: $fileName');
+        
+        final File file = File(filePath);
         
         String? mimeType;
         final extension = fileName.split('.').last.toLowerCase();
@@ -1013,12 +1199,18 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
         );
         
         if (uploaded != null) {
-          if (mounted) {
-            setState(() {
-              files.insert(0, uploaded);
-              filteredFiles.insert(0, uploaded);
-            });
-          }
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('file_name_${uploaded.id}', uploaded.name);
+          print('📝 Сохранено имя: ${uploaded.name} для файла ${uploaded.id}');
+          
+          setState(() {
+            if (fileExists) {
+              files.removeWhere((f) => f.name == fileName);
+              filteredFiles.removeWhere((f) => f.name == fileName);
+            }
+            files.insert(0, uploaded);
+            filteredFiles.insert(0, uploaded);
+          });
           _showMessage('Файл "${uploaded.name}" загружен');
         } else {
           _showMessage('Не удалось загрузить файл', isError: true);
@@ -1137,6 +1329,9 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
     if (confirm == true) {
       final success = await storageService.deleteFile(file.path);
       if (success) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove('file_name_${file.id}');
+        
         setState(() {
           filteredFiles.removeAt(index);
           if (originalIndex != -1) {
@@ -1183,6 +1378,8 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    
     return Scaffold(
       appBar: AppBar(
         title: const Text('Stepanov'),
@@ -1197,6 +1394,8 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
                 setState(() {
                   isFilterVisible = !isFilterVisible;
                 });
+              } else if (value == 'theme') {
+                themeProvider.toggleTheme();
               } else if (value == 'password') {
                 _navigateToChangePassword();
               } else if (value == 'logout') {
@@ -1221,6 +1420,16 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
                     Icon(Icons.refresh, color: Colors.green, size: 20),
                     SizedBox(width: 8),
                     Text('Обновить'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'theme',
+                child: Row(
+                  children: [
+                    Icon(Icons.brightness_6, color: Colors.purple, size: 20),
+                    SizedBox(width: 8),
+                    Text('Тема'),
                   ],
                 ),
               ),
@@ -1252,7 +1461,9 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
         children: [
           if (isFilterVisible)
             Container(
-              color: Colors.grey[100],
+              color: Theme.of(context).brightness == Brightness.dark 
+                  ? Colors.grey.shade900 
+                  : Colors.grey[100],
               padding: const EdgeInsets.all(12),
               child: Column(
                 children: [

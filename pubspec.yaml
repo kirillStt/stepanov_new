@@ -13,6 +13,9 @@ dependencies:
   # UI и иконки
   cupertino_icons: ^1.0.8
 
+  # Управление темой
+  provider: ^6.1.5+1
+
   # Автообновление версий
   flutter_desktop_updater:
     git:
