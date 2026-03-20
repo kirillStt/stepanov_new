@@ -53,4 +53,6 @@ jobs:
         with:
           files: stepanov_new-*.zip
           generate_release_notes: true
-          token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
