@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:stepanov_new/core/models/file_model.dart';
 import 'package:stepanov_new/services/storage_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class SupabaseStorageService implements StorageService {
   final SupabaseClient _supabase = Supabase.instance.client;
@@ -34,71 +35,69 @@ class SupabaseStorageService implements StorageService {
 }
 
   @override
-Future<List<FileModel>> getUserFiles(String userId) async {
-  try {
-    final List<FileObject> files = await _supabase.storage
-        .from(_bucketName)
-        .list(path: userId);
-    
-    final List<FileModel> result = [];
-    
-    for (var file in files) {
-      if (file.name != null && !file.name!.endsWith('/')) {
-        final String filePath = '$userId/${file.name}';
-        final String publicUrl = _supabase.storage
-            .from(_bucketName)
-            .getPublicUrl(filePath);
-        
-        // ПОЛУЧАЕМ МЕТАДАННЫЕ
-        final metadata = file.metadata;
-        
-        int fileSize = 0;
-        if (metadata != null && metadata.containsKey('size')) {
-          final sizeValue = metadata['size'];
-          if (sizeValue is int) {
-            fileSize = sizeValue;
-          } else if (sizeValue is String) {
-            fileSize = int.tryParse(sizeValue) ?? 0;
-          }
-        }
-        
-        // 🔥 ВОССТАНАВЛИВАЕМ ОРИГИНАЛЬНОЕ ИМЯ
-        String displayName = file.name!;
-        if (metadata != null && metadata.containsKey('originalName')) {
-          displayName = metadata['originalName'] as String;
-        }
-        
-        // Дата
-        DateTime modifiedAt = DateTime.now();
-        if (file.updatedAt != null) {
-          try {
-            if (file.updatedAt is DateTime) {
-              modifiedAt = file.updatedAt as DateTime;
-            } else if (file.updatedAt is String) {
-              modifiedAt = DateTime.parse(file.updatedAt as String);
+  Future<List<FileModel>> getUserFiles(String userId) async {
+    try {
+      final List<FileObject> files = await _supabase.storage
+          .from(_bucketName)
+          .list(path: userId);
+      
+      final List<FileModel> result = [];
+      
+      // Загружаем сохранённые имена
+      final prefs = await SharedPreferences.getInstance();
+      
+      for (var file in files) {
+        if (file.name != null && !file.name!.endsWith('/')) {
+          final String filePath = '$userId/${file.name}';
+          final String publicUrl = _supabase.storage
+              .from(_bucketName)
+              .getPublicUrl(filePath);
+          
+          int fileSize = 0;
+          if (file.metadata != null && file.metadata!.containsKey('size')) {
+            final sizeValue = file.metadata!['size'];
+            if (sizeValue is int) {
+              fileSize = sizeValue;
             }
-          } catch (e) {
-            print('Ошибка парсинга даты: $e');
           }
+          
+          DateTime modifiedAt = DateTime.now();
+          if (file.updatedAt != null) {
+            try {
+              if (file.updatedAt is DateTime) {
+                modifiedAt = file.updatedAt as DateTime;
+              } else if (file.updatedAt is String) {
+                modifiedAt = DateTime.parse(file.updatedAt as String);
+              }
+            } catch (e) {
+              print('Ошибка парсинга даты: $e');
+            }
+          }
+          
+          // ВОССТАНАВЛИВАЕМ ОРИГИНАЛЬНОЕ ИМЯ
+          String displayName = file.name!;
+          final savedName = prefs.getString('file_name_$filePath');
+          if (savedName != null && savedName.isNotEmpty) {
+            displayName = savedName;
+          }
+          
+          result.add(FileModel(
+            id: filePath,
+            name: displayName,
+            path: filePath,
+            size: fileSize,
+            modifiedAt: modifiedAt,
+            downloadUrl: publicUrl,
+          ));
         }
-        
-        result.add(FileModel(
-          id: filePath,
-          name: displayName,
-          path: filePath,
-          size: fileSize,
-          modifiedAt: modifiedAt,
-          downloadUrl: publicUrl,
-        ));
       }
+      
+      return result;
+    } catch (e) {
+      print('Ошибка получения файлов из Supabase: $e');
+      return [];
     }
-    
-    return result;
-  } catch (e) {
-    print('Ошибка получения файлов из Supabase: $e');
-    return [];
   }
-}
 
 @override
 Future<FileModel?> uploadFile(
@@ -112,10 +111,11 @@ Future<FileModel?> uploadFile(
     final String filePath = '$userId/$safeFileName';
     final int fileSize = await file.length();
     
-    print('Оригинальное имя: $fileName');
-    print('Безопасное имя: $safeFileName');
+    print('📤 Загрузка файла: $fileName');
+    print('🔒 Безопасное имя: $safeFileName');
+    print('📦 Размер: ${(fileSize / 1024 / 1024).toStringAsFixed(2)} МБ');
     
-    // Загружаем файл с метаданными (оригинальное имя)
+    // Прямая загрузка в Supabase Storage (без timeout)
     final response = await _supabase.storage
         .from(_bucketName)
         .upload(
@@ -124,16 +124,15 @@ Future<FileModel?> uploadFile(
           fileOptions: FileOptions(
             cacheControl: '3600',
             contentType: mimeType,
-            metadata: {
-              'originalName': fileName,  // 🔥 СОХРАНЯЕМ ОРИГИНАЛЬНОЕ ИМЯ
-            },
           ),
         );
     
     if (response.isEmpty) {
-      print('Ошибка: пустой ответ от Supabase');
+      print('❌ Ошибка: пустой ответ от Supabase');
       return null;
     }
+    
+    print('✅ Файл загружен в Supabase');
     
     final String publicUrl = _supabase.storage
         .from(_bucketName)
@@ -141,14 +140,14 @@ Future<FileModel?> uploadFile(
     
     return FileModel(
       id: filePath,
-      name: fileName,  // оригинальное имя для отображения
+      name: fileName,
       path: filePath,
       size: fileSize,
       modifiedAt: DateTime.now(),
       downloadUrl: publicUrl,
     );
   } catch (e) {
-    print('Ошибка загрузки в Supabase: $e');
+    print('❌ Ошибка загрузки в Supabase: $e');
     return null;
   }
 }

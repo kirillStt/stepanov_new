@@ -229,12 +229,8 @@ void main() async {
   
   supabase = Supabase.instance.client;
   
-  final cloudService = CloudStorageService();
-  final session = supabase.auth.currentSession;
-  if (session != null) {
-    cloudService.init(session.accessToken);
-  }
-  storageService = cloudService;
+  // Используем прямую загрузку в Supabase
+  storageService = SupabaseStorageService();
   
   _handleDeepLinks(); 
 
@@ -242,7 +238,7 @@ void main() async {
     updateJsonUrl: 'https://raw.githubusercontent.com/kirillStt/stepanov_new/main/updates.json',
   );
 
-  print('Используется Supabase с backend на Vercel');
+  print('Используется прямая загрузка в Supabase Storage');
   runApp(const FileStorageApp());
 }
 
@@ -965,43 +961,66 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
   String? get _userId => supabase.auth.currentUser?.id;
 
   Future<void> _loadFiles() async {
-    if (mounted) setState(() => isLoading = true);
+    // Не вызываем setState до загрузки
     try {
       final userId = _userId ?? '';
       if (userId.isNotEmpty) {
+        // Обновляем токен если нужно
         final session = supabase.auth.currentSession;
         if (session != null && storageService is CloudStorageService) {
           (storageService as CloudStorageService).init(session.accessToken);
         }
-        files = await storageService.getUserFiles(userId);
         
-        print('Загружено файлов из Supabase: ${files.length}');
+        // Получаем файлы
+        final newFiles = await storageService.getUserFiles(userId);
         
+        print('Загружено файлов из Supabase: ${newFiles.length}');
+        
+        // Восстанавливаем имена (без изменения исходного списка)
         final prefs = await SharedPreferences.getInstance();
-        for (int i = 0; i < files.length; i++) {
-          final savedName = prefs.getString('file_name_${files[i].id}');
+        final restoredFiles = <FileModel>[];
+        
+        for (final file in newFiles) {
+          final savedName = prefs.getString('file_name_${file.id}');
           if (savedName != null && savedName.isNotEmpty) {
-            print('   Восстанавливаем имя: ${files[i].name} -> $savedName');
-            files[i] = FileModel(
-              id: files[i].id,
+            print('   Восстанавливаем имя: ${file.name} -> $savedName');
+            restoredFiles.add(FileModel(
+              id: file.id,
               name: savedName,
-              path: files[i].path,
-              size: files[i].size,
-              modifiedAt: files[i].modifiedAt,
-              downloadUrl: files[i].downloadUrl,
-            );
+              path: file.path,
+              size: file.size,
+              modifiedAt: file.modifiedAt,
+              downloadUrl: file.downloadUrl,
+            ));
           } else {
-            print('   Имя из Supabase: ${files[i].name}');
+            print('   Имя из Supabase: ${file.name}');
+            restoredFiles.add(file);
           }
         }
         
-        filteredFiles = List.from(files);
-        print('Загружено файлов: ${files.length}');
+        // Один setState после всех операций
+        if (mounted) {
+          setState(() {
+            files = restoredFiles;
+            filteredFiles = List.from(restoredFiles);
+            isLoading = true; // показываем загрузку
+          });
+        }
       }
     } catch (e) {
       print('Ошибка загрузки файлов: $e');
+      if (mounted) {
+        setState(() {
+          isLoading = false;
+        });
+      }
     } finally {
-      if (mounted) setState(() => isLoading = false);
+      // Завершаем загрузку
+      if (mounted) {
+        setState(() {
+          isLoading = false;
+        });
+      }
     }
   }
 
@@ -1186,6 +1205,9 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
             break;
           case 'torrent':
             mimeType = 'application/x-bittorrent';
+            break;
+          case 'pptx':
+            mimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
             break;
           default:
             mimeType = 'application/octet-stream';
@@ -1587,6 +1609,7 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
                       )
                     : ListView.builder(
                         itemCount: filteredFiles.length,
+                        itemExtent: 72, // ← фиксированная высота элемента
                         itemBuilder: (context, index) {
                           final file = filteredFiles[index];
                           return Card(
