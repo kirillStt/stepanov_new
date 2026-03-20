@@ -8,23 +8,30 @@ class SupabaseStorageService implements StorageService {
   
   static const String _bucketName = 'stepanov-web';
 
-  // 🔥 Функция транслитерации кириллицы в латиницу
   String _transliterate(String text) {
-    const cyrillic = 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя';
-    const latin = 'ABVGDEEZHZIJKLMNOPRSTUFHTSCHSHSHHYYEYUYABVGDEEZHZIJKLMNOPRSTUFHTSCHSHSHHYYEYUY';
-    
-    final buffer = StringBuffer();
-    for (int i = 0; i < text.length; i++) {
-      final char = text[i];
-      final index = cyrillic.indexOf(char);
-      if (index != -1) {
-        buffer.write(latin[index]);
-      } else {
-        buffer.write(char);
-      }
+  const cyrillic = 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя';
+  const latin = 'ABVGDEEZHZIJKLMNOPRSTUFHTSCHSHSHHYYEYUYABVGDEEZHZIJKLMNOPRSTUFHTSCHSHSHHYYEYUY';
+  
+  final buffer = StringBuffer();
+  for (int i = 0; i < text.length; i++) {
+    final char = text[i];
+    final index = cyrillic.indexOf(char);
+    if (index != -1) {
+      buffer.write(latin[index]);
+    } else if (char == ' ' || char == '_' || char == '-') {
+      buffer.write('_');
+    } else if (char == '[' || char == ']' || char == '(' || char == ')' || char == '{' || char == '}') {
+      // пропускаем квадратные скобки и другие спецсимволы
+      continue;
+    } else if (RegExp(r'[a-zA-Z0-9]').hasMatch(char)) {
+      buffer.write(char);
+    } else {
+      buffer.write('_');
     }
-    return buffer.toString();
   }
+  // удаляем повторяющиеся подчёркивания
+  return buffer.toString().replaceAll(RegExp(r'_+'), '_').replaceAll(RegExp(r'^_|_$'), '');
+}
 
   @override
   Future<List<FileModel>> getUserFiles(String userId) async {
@@ -89,7 +96,7 @@ class SupabaseStorageService implements StorageService {
     String? mimeType,
   }) async {
     try {
-      // Транслитерируем имя файла для безопасного хранения в Supabase
+      // Транслитерируем имя файла
       final safeFileName = _transliterate(fileName);
       final String filePath = '$userId/$safeFileName';
       final int fileSize = await file.length();
@@ -97,7 +104,6 @@ class SupabaseStorageService implements StorageService {
       print('Оригинальное имя: $fileName');
       print('Безопасное имя для Supabase: $safeFileName');
       
-      // Загружаем файл в Supabase Storage
       final response = await _supabase.storage
           .from(_bucketName)
           .upload(
@@ -120,7 +126,6 @@ class SupabaseStorageService implements StorageService {
       
       print('Файл загружен: $safeFileName, размер: $fileSize байт');
       
-      // Возвращаем модель с оригинальным именем для отображения
       return FileModel(
         id: filePath,
         name: fileName, // Оригинальное имя для пользователя
