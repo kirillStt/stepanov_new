@@ -7,7 +7,6 @@ import 'dart:async';
 import 'package:share_plus/share_plus.dart';
 import 'package:cross_file/cross_file.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:dio/dio.dart' as dio;
 import 'core/models/file_model.dart';
 import 'services/storage_service.dart';
@@ -162,16 +161,31 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  await dotenv.load();
+  // Получаем переменные из --dart-define
+  const supabaseUrl = String.fromEnvironment('SUPABASE_URL');
+  const supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
   
+  // Проверка, что переменные переданы
+  if (supabaseUrl.isEmpty || supabaseAnonKey.isEmpty) {
+    throw Exception(
+      'Missing environment variables!\n'
+      'Please run with: flutter run --dart-define=SUPABASE_URL=... --dart-define=SUPABASE_ANON_KEY=...'
+    );
+  }
+  
+  print('Environment variables loaded');
+  print('SUPABASE_URL: $supabaseUrl');
+  print('SUPABASE_ANON_KEY: ${supabaseAnonKey.substring(0, 10)}...');
+  
+  // Инициализируем Supabase с переданными переменными
   await Supabase.initialize(
-    url: dotenv.env['SUPABASE_URL']!,
-    anonKey: dotenv.env['SUPABASE_ANON_KEY']!,
+    url: supabaseUrl,
+    anonKey: supabaseAnonKey,
   );
   
   supabase = Supabase.instance.client;
   
-  // 🔥 Создаём CloudStorageService с токеном
+  // Создаём CloudStorageService с токеном
   final cloudService = CloudStorageService();
   final session = supabase.auth.currentSession;
   if (session != null) {

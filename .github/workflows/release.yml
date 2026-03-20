@@ -10,22 +10,9 @@ jobs:
     runs-on: windows-latest
     
     steps:
-      # 1. Загружаем код
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Кэш для Flutter SDK
-      - name: Cache Flutter SDK
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ runner.tool_cache }}/flutter
-            ~/.pub-cache
-          key: ${{ runner.os }}-flutter-${{ hashFiles('**/pubspec.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-flutter-
-
-      # 3. Установка Flutter с кэшированием
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -33,26 +20,23 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # 4. Получение зависимостей
       - name: Get dependencies
         run: flutter pub get
 
-      # 5. Сборка Windows
-      - name: Build Windows
-        run: flutter build windows --release
+      - name: Build Windows with environment variables
+        run: |
+          flutter build windows --release `
+            --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} `
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
 
-      # 6. Создание ZIP архива
       - name: Create ZIP archive
         run: |
           cd build\windows\x64\runner\Release
           Compress-Archive -Path * -DestinationPath "$env:GITHUB_WORKSPACE\stepanov_new-$env:GITHUB_REF_NAME-windows.zip"
 
-      # 7. Создание релиза на GitHub
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: stepanov_new-*.zip
           generate_release_notes: true
           token: ${{ secrets.GITHUB_TOKEN }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

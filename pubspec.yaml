@@ -34,9 +34,6 @@ dependencies:
 
   # Supabase для хранения файлов
   supabase_flutter: ^2.8.4
-
-  # Для работы с .env файлом (хранение ключей)
-  flutter_dotenv: ^5.2.1
   
   # Для шаринга файлов
   share_plus: ^12.0.1
